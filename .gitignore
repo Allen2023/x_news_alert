@@ -18,3 +18,4 @@ scripts/alert-state/
 credentials.yaml
 credentials.yaml.local
 logs/
+.pytest_cache/
