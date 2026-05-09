@@ -7,7 +7,7 @@ name = "x-news-alert"
 version = "3.0.0"
 description = "X/Twitter news alert automation - track bloggers and lists, send market-aware alerts"
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
 requires-python = ">=3.10"
 authors = [
     {name = "Allen2023", email = "xusongzi324@gmail.com"}
@@ -16,7 +16,6 @@ keywords = ["twitter", "x", "alert", "news", "automation"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -30,20 +29,26 @@ dependencies = [
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
+    "build>=1.0",
 ]
 
 [project.scripts]
-x = "scripts.x_news_alert:main"
-x-news-alert = "scripts.x_news_alert:main"
+xna = "x_news_alert.cli:main"
+x = "x_news_alert.cli:main"
+x-news-alert = "x_news_alert.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/Allen2023/x-news-alert"
-Documentation = "https://github.com/Allen2023/x-news-alert#readme"
-Repository = "https://github.com/Allen2023/x-news-alert"
+Homepage = "https://github.com/Allen2023/x_news_alert"
+Documentation = "https://github.com/Allen2023/x_news_alert#readme"
+Repository = "https://github.com/Allen2023/x_news_alert"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["scripts*"]
+include = ["x_news_alert*"]
 
 [tool.setuptools.package-data]
-scripts = ["*.md"]
+x_news_alert = ["*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

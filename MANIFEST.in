@@ -1,0 +1,3 @@
+include AGENTS.md
+include SCHEMA.md
+include credentials.yaml.example

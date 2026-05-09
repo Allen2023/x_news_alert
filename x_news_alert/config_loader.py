@@ -3,17 +3,56 @@
 凭证配置加载模块
 从 credentials.yaml 读取所有敏感配置
 """
+import importlib
 import os
-import yaml
 from pathlib import Path
 from typing import Any
 
 # 项目根目录
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
-CREDENTIALS_FILE = PROJECT_ROOT / "credentials.yaml"
+
+
+def default_app_dir() -> Path:
+    configured = os.environ.get("X_NEWS_ALERT_HOME")
+    if configured:
+        return Path(configured).expanduser()
+    if os.name == "nt":
+        appdata = os.environ.get("APPDATA") or os.environ.get("LOCALAPPDATA")
+        if appdata:
+            return Path(appdata) / "x-news-alert"
+    xdg_config = os.environ.get("XDG_CONFIG_HOME")
+    if xdg_config:
+        return Path(xdg_config).expanduser() / "x-news-alert"
+    return Path.home() / ".config" / "x-news-alert"
+
+
+def default_credentials_file() -> Path:
+    configured = os.environ.get("X_NEWS_ALERT_CREDENTIALS")
+    if configured:
+        return Path(configured).expanduser()
+    candidates = [
+        default_app_dir() / "credentials.yaml",
+        Path.cwd() / "credentials.yaml",
+        PROJECT_ROOT / "credentials.yaml",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+CREDENTIALS_FILE = default_credentials_file()
 
 _config_cache: dict[str, Any] | None = None
+
+
+def _load_yaml_module() -> Any:
+    """延迟加载 PyYAML，避免没有凭证文件时把它变成硬依赖。"""
+    try:
+        return importlib.import_module("yaml")
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("PyYAML is required to read credentials.yaml; install it with `pip install pyyaml`.") from exc
 
 
 def load_credentials() -> dict[str, Any]:
@@ -25,8 +64,10 @@ def load_credentials() -> dict[str, Any]:
     if not CREDENTIALS_FILE.exists():
         return {}
 
+    yaml_module = _load_yaml_module()
     with open(CREDENTIALS_FILE, "r", encoding="utf-8") as f:
-        _config_cache = yaml.safe_load(f) or {}
+        loaded = yaml_module.safe_load(f) or {}
+    _config_cache = loaded if isinstance(loaded, dict) else {}
     return _config_cache
 
 

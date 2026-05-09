@@ -1,17 +1,52 @@
-import importlib.util
+import importlib
 import io
 import json
+import os
+import sys
+import time
 from pathlib import Path
 
 
-MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "x_news_alert.py"
+ROOT = Path(__file__).resolve().parents[1]
+PACKAGE_DIR = ROOT / "x_news_alert"
 
 
 def load_module():
-    spec = importlib.util.spec_from_file_location("x_news_alert", MODULE_PATH)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    sys.modules.pop("x_news_alert.cli", None)
+    return importlib.import_module("x_news_alert.cli")
+
+
+def test_config_loader_missing_credentials_does_not_require_yaml(tmp_path, monkeypatch):
+    loader = importlib.import_module("x_news_alert.config_loader")
+    monkeypatch.setattr(loader, "_config_cache", None)
+    monkeypatch.setattr(loader, "CREDENTIALS_FILE", tmp_path / "credentials.yaml")
+    monkeypatch.setattr(
+        loader.importlib,
+        "import_module",
+        lambda name: (_ for _ in ()).throw(AssertionError(f"unexpected import: {name}")),
+    )
+
+    assert loader.load_credentials() == {}
+
+
+def test_config_loader_reports_missing_pyyaml_when_credentials_exist(tmp_path, monkeypatch):
+    loader = importlib.import_module("x_news_alert.config_loader")
+    credentials = tmp_path / "credentials.yaml"
+    credentials.write_text("telegram:\n  bot_token: token\n", encoding="utf-8")
+    monkeypatch.setattr(loader, "_config_cache", None)
+    monkeypatch.setattr(loader, "CREDENTIALS_FILE", credentials)
+    monkeypatch.setattr(
+        loader.importlib,
+        "import_module",
+        lambda name: (_ for _ in ()).throw(ModuleNotFoundError(name)),
+    )
+
+    try:
+        loader.load_credentials()
+    except RuntimeError as exc:
+        assert "pip install pyyaml" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError")
 
 
 
@@ -24,6 +59,62 @@ def test_normalizes_x_urls_and_route_targets():
     assert xna.normalize_username("@bob/") == "bob"
     assert xna.normalize_list_id("https://twitter.com/i/lists/987?x=1") == "987"
     assert xna.parse_route(["discord:12345"]) == ("discord", "discord_channel_12345")
+
+
+def test_rows_from_raw_normalizes_twitter_cli_envelope():
+    xna = load_module()
+    raw = {
+        "ok": True,
+        "schema_version": "1",
+        "data": [
+            {
+                "id": "t1",
+                "text": "$NVDA demand update",
+                "author": {"name": "Alice", "screenName": "alice"},
+                "createdAt": "2026-05-09T00:00:00Z",
+                "metrics": {"likes": "10", "retweets": 2, "replies": 1, "bookmarks": 3, "views": 1000},
+            }
+        ],
+    }
+
+    rows = xna.rows_from_raw(raw)
+
+    assert rows[0]["id"] == "t1"
+    assert rows[0]["author"]["username"] == "alice"
+    assert rows[0]["created_at"] == "2026-05-09T00:00:00Z"
+    assert rows[0]["metrics"]["likes"] == 10
+    assert rows[0]["public_metrics"]["impression_count"] == 1000
+
+
+def test_rows_from_raw_joins_xurl_includes_users():
+    xna = load_module()
+    raw = {
+        "data": [{"id": "t2", "author_id": "u1", "text": "hello"}],
+        "includes": {"users": [{"id": "u1", "name": "Bob", "username": "bob"}]},
+    }
+
+    rows = xna.rows_from_raw(raw)
+
+    assert rows[0]["author"]["name"] == "Bob"
+    assert rows[0]["author"]["username"] == "bob"
+
+
+def test_filter_list_tweets_scores_and_limits():
+    xna = load_module()
+    tweets = xna.rows_from_raw(
+        {
+            "data": [
+                {"id": "low", "text": "quiet", "metrics": {"likes": 1, "views": 10}},
+                {"id": "high", "text": "loud", "metrics": {"likes": 10, "retweets": 3, "views": 1000}},
+            ]
+        }
+    )
+    config = {"list_filter": {"enabled": True, "mode": "topN", "topN": 1}}
+
+    selected = xna.filter_list_tweets(tweets, config)
+
+    assert [tweet["id"] for tweet in selected] == ["high"]
+    assert selected[0]["score"] > 0
 
 
 
@@ -260,6 +351,46 @@ def test_post_json_accepts_empty_success_response(monkeypatch):
     assert xna.post_json("https://example.test", {"ok": True}, {}, 1) is None
 
 
+def test_send_telegram_uses_configured_bot_token_env(monkeypatch):
+    xna = load_module()
+    calls = []
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.setenv("CUSTOM_TELEGRAM_TOKEN", "custom-token")
+    monkeypatch.setattr(
+        xna,
+        "post_json",
+        lambda url, payload, headers, timeout: calls.append((url, payload, headers)) or {"ok": True},
+    )
+
+    xna.send_telegram(
+        {"platforms": {"telegram": {"bot_token_env": "CUSTOM_TELEGRAM_TOKEN"}}},
+        "-100123",
+        "hello",
+    )
+
+    assert calls[0][0] == "https://api.telegram.org/botcustom-token/sendMessage"
+
+
+def test_send_discord_uses_configured_bot_token_env(monkeypatch):
+    xna = load_module()
+    calls = []
+    monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+    monkeypatch.setenv("CUSTOM_DISCORD_TOKEN", "custom-token")
+    monkeypatch.setattr(
+        xna,
+        "post_json",
+        lambda url, payload, headers, timeout: calls.append((url, payload, headers)) or {"id": "msg"},
+    )
+
+    xna.send_discord(
+        {"platforms": {"discord": {"bot_token_env": "CUSTOM_DISCORD_TOKEN"}}},
+        "discord_channel_123",
+        "hello",
+    )
+
+    assert calls[0][2]["Authorization"] == "Bot custom-token"
+
+
 def test_send_with_retry_retries_transient_alert_errors():
     xna = load_module()
     calls = []
@@ -352,6 +483,31 @@ def test_run_lock_prevents_second_active_runner(tmp_path):
             assert second is False
 
 
+def test_run_lock_releases_after_context(tmp_path):
+    xna = load_module()
+    paths = xna.AlertPaths(tmp_path)
+    xna.ensure_files(paths)
+
+    with xna.RunLock(paths.lock) as first:
+        assert first is True
+
+    assert not paths.lock.exists()
+    with xna.RunLock(paths.lock) as second:
+        assert second is True
+
+
+def test_run_lock_reclaims_stale_lock_file(tmp_path):
+    xna = load_module()
+    paths = xna.AlertPaths(tmp_path)
+    xna.ensure_files(paths)
+    paths.lock.write_text("stale", encoding="utf-8")
+    old = time.time() - 10
+    os.utime(paths.lock, (old, old))
+
+    with xna.RunLock(paths.lock, stale_seconds=1) as acquired:
+        assert acquired is True
+
+
 
 # ── Schedule ───────────────────────────────────────────────────
 
@@ -380,10 +536,10 @@ def test_schedule_command_points_to_single_run_entrypoint(tmp_path):
 
     command = xna.schedule_command(paths)
 
-    assert "x_news_alert.py" in command
     assert "--base-dir" in command
     assert str(tmp_path) in command
     assert "run all" in command
+    assert "x-news-alert" in command or "cli.py" in command
 
 
 def test_schedule_doctor_reports_missing_targets_and_default_chat(tmp_path):
@@ -511,6 +667,35 @@ def test_schedule_cli_show_and_doctor(tmp_path):
     assert json.loads(doctor_out.getvalue())["ok"] is False
 
 
+def test_cli_structured_config_output_uses_envelope(tmp_path):
+    xna = load_module()
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+
+    code = xna.main(["--base-dir", str(tmp_path), "--structured", "config"], stdout=stdout, stderr=stderr)
+
+    payload = json.loads(stdout.getvalue())
+    assert code == 0
+    assert payload["ok"] is True
+    assert payload["schema_version"] == "1"
+    assert payload["data"]["default_platform"] == "feishu"
+    assert stderr.getvalue() == ""
+
+
+def test_cli_structured_error_output_uses_envelope(tmp_path):
+    xna = load_module()
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+
+    code = xna.main(["--base-dir", str(tmp_path), "--structured", "run", "blogger"], stdout=stdout, stderr=stderr)
+
+    payload = json.loads(stderr.getvalue())
+    assert code == 1
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "alert_error"
+    assert "requires an identifier" in payload["error"]["message"]
+
+
 
 # ── Auth & init ────────────────────────────────────────────────
 
@@ -543,6 +728,18 @@ def test_cli_status_initializes_files_and_returns_zero(tmp_path):
     ] == "feishu"
     assert "Config" in stdout.getvalue()
     assert stderr.getvalue() == ""
+
+
+def test_cli_defaults_to_user_config_dir_from_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("X_NEWS_ALERT_HOME", str(tmp_path))
+    xna = load_module()
+    stdout = io.StringIO()
+
+    code = xna.main(["status"], stdout=stdout, stderr=io.StringIO())
+
+    assert code == 0
+    assert (tmp_path / "alert-config.json").exists()
+    assert xna.default_base_dir() == tmp_path
 
 
 def test_init_command_writes_config_target_and_schedule(tmp_path):
@@ -751,11 +948,38 @@ def test_cli_compatibility_subcommands_for_old_script_wrappers(tmp_path, monkeyp
     assert "sent" in send_out.getvalue()
 
 
-def test_v3_scripts_dir_contains_only_main_entry():
-    script_dir = MODULE_PATH.parent
+def test_package_import_loads_credentials_module():
+    sys.modules.pop("x_news_alert.cli", None)
+    xna = importlib.import_module("x_news_alert.cli")
+
+    assert xna.HAS_CREDENTIALS is True
+
+
+def test_distribution_uses_real_package_and_keeps_thin_script_wrapper():
+    script_dir = ROOT / "scripts"
 
     actual = {p.name for p in script_dir.iterdir() if p.is_file() and not p.name.startswith("alert")}
-    assert actual == {"x_news_alert.py", "config_loader.py", "xurl-token-check.py"}, f"unexpected files in scripts/: {actual - {'x_news_alert.py', 'config_loader.py', 'xurl-token-check.py'}}"
+    assert actual == {"x_news_alert.py", "xurl-token-check.py"}
+    package_files = {p.name for p in PACKAGE_DIR.iterdir() if p.is_file()}
+    assert {"__init__.py", "cli.py", "config_loader.py", "models.py", "output.py", "tweets.py"}.issubset(
+        package_files
+    )
+
+
+def test_pyproject_console_scripts_target_installable_package():
+    import tomllib
+
+    data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    assert data["project"]["scripts"]["x-news-alert"] == "x_news_alert.cli:main"
+    assert data["project"]["scripts"]["xna"] == "x_news_alert.cli:main"
+    assert data["tool"]["setuptools"]["packages"]["find"]["include"] == ["x_news_alert*"]
+
+
+def test_schema_and_ci_docs_exist():
+    assert (ROOT / "SCHEMA.md").exists()
+    assert (ROOT / ".github" / "workflows" / "ci.yml").exists()
+    assert (ROOT / ".github" / "workflows" / "publish.yml").exists()
 
 
 
@@ -774,6 +998,8 @@ def test_format_time_ago_returns_correct_units():
     assert "分钟前" in xna.format_time_ago(iso(300))
     assert "小时前" in xna.format_time_ago(iso(7200))
     assert "天前" in xna.format_time_ago(iso(90000))
+    twitter_legacy = _time.strftime("%a %b %d %H:%M:%S +0000 %Y", _time.gmtime(now_epoch - 300))
+    assert "分钟前" in xna.format_time_ago(twitter_legacy)
 
 
 def test_format_time_ago_returns_empty_for_future_or_invalid():
@@ -851,6 +1077,49 @@ def test_process_target_list_mode_sends_digest_and_marks_all_read(tmp_path, monk
     assert "summary L2" in sends[0]
     assert (paths.state / "list-123" / "read-ids.json").exists()
     ids = json.loads((paths.state / "list-123" / "read-ids.json").read_text(encoding="utf-8"))
+    assert "L1" in ids and "L2" in ids
+
+
+def test_process_target_list_filter_selects_top_items_and_marks_filtered_read(tmp_path, monkeypatch):
+    xna = load_module()
+    paths = xna.AlertPaths(tmp_path)
+    xna.ensure_files(paths)
+    raw = {
+        "data": [
+            {"id": "L1", "text": "quiet", "metrics": {"likes": 1, "views": 10}},
+            {"id": "L2", "text": "important", "metrics": {"likes": 30, "retweets": 4, "views": 1000}},
+        ]
+    }
+    config = xna.read_json(paths.config, {})
+    config["list_filter"] = {"enabled": True, "mode": "topN", "topN": 1}
+    sends = []
+    analyzed_ids = []
+
+    monkeypatch.setattr(xna, "fetch_tweets", lambda mode, identifier, **kw: raw)
+
+    def fake_analyze(tweets, config, **kw):
+        analyzed_ids.extend(t["id"] for t in tweets)
+        return [{"id": t["id"], "chinese_summary": f"summary {t['id']}", "symbols": []} for t in tweets]
+
+    monkeypatch.setattr(xna, "analyze_tweets", fake_analyze)
+    monkeypatch.setattr(xna, "send_message", lambda p, chat, msg, platform="auto": sends.append(msg))
+
+    xna.process_target(
+        paths,
+        "list",
+        "123",
+        "MyList",
+        "-100ok",
+        "telegram",
+        "List MyList",
+        io.StringIO(),
+        config=config,
+    )
+
+    ids = json.loads((paths.state / "list-123" / "read-ids.json").read_text(encoding="utf-8"))
+    assert analyzed_ids == ["L2"]
+    assert "summary L2" in sends[0]
+    assert "summary L1" not in sends[0]
     assert "L1" in ids and "L2" in ids
 
 
