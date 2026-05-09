@@ -25,6 +25,19 @@ import shlex
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, TextIO
 
+# 凭证配置加载
+try:
+    from config_loader import (
+        get_credential,
+        get_xurl_config,
+        get_llm_config,
+        get_discord_bot_token,
+        get_telegram_bot_token,
+    )
+    HAS_CREDENTIALS = True
+except ImportError:
+    HAS_CREDENTIALS = False
+
 
 
 # ── Constants & Defaults ─────────────────────────────────────
@@ -435,6 +448,23 @@ def xurl_auth_config(config: dict[str, Any]) -> dict[str, Any]:
 def env_lookup(env: Mapping[str, str] | None, name: str) -> str:
     current_env = env if env is not None else os.environ
     return str(current_env.get(name) or "")
+
+
+def resolve_token(env_var: str, creds_path: tuple[str, ...], default: str = "") -> str:
+    """
+    优先从环境变量获取，如果不存在则从 credentials.yaml 获取。
+    env_var: 环境变量名，如 "TELEGRAM_BOT_TOKEN"
+    creds_path: credentials.yaml 中的路径，如 ("telegram", "bot_token")
+    """
+    # 1. 优先使用环境变量
+    if env_var and env_var in os.environ:
+        return os.environ[env_var]
+    # 2. 尝试从 credentials.yaml 获取
+    if HAS_CREDENTIALS:
+        val = get_credential(*creds_path)
+        if val:
+            return val
+    return default
 
 
 def configure_twitter_cookie(
@@ -1157,7 +1187,7 @@ def analyze_tweets(
     warn: Callable[[str], None] | None = None,
 ) -> list[dict[str, Any]]:
     api_key_env = str(config.get("llm_api_key_env") or "OPENAI_API_KEY")
-    api_key = os.environ.get(api_key_env) or str(config.get("llm_api_key") or "")
+    api_key = resolve_token(api_key_env, ("llm", "api_key"))
     if not api_key:
         return [fallback_analysis(tweet) for tweet in tweets]
 
@@ -1434,9 +1464,9 @@ def env_from_config(config: dict[str, Any], path: list[str], fallback_env: str) 
 
 
 def send_telegram(config: dict[str, Any], chat_id: str, message: str) -> None:
-    token = env_from_config(config, ["platforms", "telegram", "bot_token_env"], "TELEGRAM_BOT_TOKEN")
+    token = resolve_token("TELEGRAM_BOT_TOKEN", ("telegram", "bot_token"))
     if not token:
-        raise AlertError("TELEGRAM_BOT_TOKEN is not configured")
+        raise AlertError("Telegram bot token is not configured")
     response = post_json(
         f"https://api.telegram.org/bot{token}/sendMessage",
         {"chat_id": chat_id, "text": message},
@@ -1451,9 +1481,9 @@ def send_discord(config: dict[str, Any], chat_id: str, message: str) -> None:
     if chat_id.startswith("https://discord.com/api/webhooks/"):
         post_json(chat_id, {"content": message}, {}, timeout=60)
         return
-    token = env_from_config(config, ["platforms", "discord", "bot_token_env"], "DISCORD_BOT_TOKEN")
+    token = resolve_token("DISCORD_BOT_TOKEN", ("discord", "bot_token"))
     if not token:
-        raise AlertError("DISCORD_BOT_TOKEN is not configured")
+        raise AlertError("Discord bot token is not configured")
     channel_id = chat_id.removeprefix("discord_channel_")
     if chat_id.startswith("discord_dm_"):
         response = post_json(

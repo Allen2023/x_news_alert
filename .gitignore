@@ -13,3 +13,8 @@ scripts/alert-config.json
 scripts/alert-bloggers.json
 scripts/alert-lists.json
 scripts/alert-state/
+
+# Credentials (contains sensitive tokens)
+credentials.yaml
+credentials.yaml.local
+logs/
