@@ -450,11 +450,14 @@ def env_lookup(env: Mapping[str, str] | None, name: str) -> str:
     return str(current_env.get(name) or "")
 
 
-def resolve_token(env_var: str, creds_path: tuple[str, ...], default: str = "") -> str:
+def resolve_token(env_var: str, creds_path: tuple[str, ...], config: dict[str, Any] | None = None, default: str = "", fallback_key: str = "") -> str:
     """
-    优先从环境变量获取，如果不存在则从 credentials.yaml 获取。
+    优先从环境变量获取，如果不存在则从 credentials.yaml 获取，最后从 config 获取。
     env_var: 环境变量名，如 "TELEGRAM_BOT_TOKEN"
     creds_path: credentials.yaml 中的路径，如 ("telegram", "bot_token")
+    config: 可选的 config 字典
+    default: 默认返回值
+    fallback_key: config 中的备用 key，如 "llm_api_key"
     """
     # 1. 优先使用环境变量
     if env_var and env_var in os.environ:
@@ -464,6 +467,17 @@ def resolve_token(env_var: str, creds_path: tuple[str, ...], default: str = "") 
         val = get_credential(*creds_path)
         if val:
             return val
+    # 3. 从 config 获取
+    if config:
+        # 尝试 env_var 对应的 key（如 "OPENAI_API_KEY"）
+        val = config.get(env_var) or config.get(env_var.lower()) or config.get(env_var.upper())
+        if val:
+            return val
+        # 尝试 fallback_key（如 "llm_api_key"）
+        if fallback_key:
+            val = config.get(fallback_key)
+            if val:
+                return val
     return default
 
 
@@ -1187,7 +1201,7 @@ def analyze_tweets(
     warn: Callable[[str], None] | None = None,
 ) -> list[dict[str, Any]]:
     api_key_env = str(config.get("llm_api_key_env") or "OPENAI_API_KEY")
-    api_key = resolve_token(api_key_env, ("llm", "api_key"))
+    api_key = resolve_token(api_key_env, ("llm", "api_key"), config=config, fallback_key="llm_api_key")
     if not api_key:
         return [fallback_analysis(tweet) for tweet in tweets]
 
@@ -1742,7 +1756,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    init = sub.add_parser("init", help="Initialize config, targets, and scheduler metadata")
+    init = sub.add_parser("init", aliases=["i"], help="Initialize config, targets, and scheduler metadata")
     init.add_argument("--platform", choices=sorted(SUPPORTED_PLATFORMS), default="feishu")
     init.add_argument("--chat-id", default="")
     init.add_argument("--llm-provider", default="openai")
@@ -1768,76 +1782,76 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--timezone", default=None)
     init.add_argument("--interactive", action="store_true")
 
-    track = sub.add_parser("track", help="Add a blogger and run it once")
+    track = sub.add_parser("track", aliases=["t"], help="Add a blogger and run it once")
     track.add_argument("target")
     track.add_argument("routes", nargs="*")
 
-    add_b = sub.add_parser("add-blogger", help="Add or replace a blogger target")
+    add_b = sub.add_parser("add-blogger", aliases=["ab"], help="Add or replace a blogger target")
     add_b.add_argument("target")
     add_b.add_argument("routes", nargs="*")
 
-    rm_b = sub.add_parser("remove-blogger", help="Remove a blogger target")
+    rm_b = sub.add_parser("remove-blogger", aliases=["rm", "rb"], help="Remove a blogger target")
     rm_b.add_argument("target")
 
-    add_l = sub.add_parser("add-list", help="Add or replace an X List target")
+    add_l = sub.add_parser("add-list", aliases=["addList", "al"], help="Add or replace an X List target")
     add_l.add_argument("target")
     add_l.add_argument("routes", nargs="*")
 
-    rm_l = sub.add_parser("remove-list", help="Remove an X List target")
+    rm_l = sub.add_parser("remove-list", aliases=["rmList", "rl"], help="Remove an X List target")
     rm_l.add_argument("target")
 
-    sp = sub.add_parser("set-platform", help="Set default send platform")
+    sp = sub.add_parser("set-platform", aliases=["platform", "p"], help="Set default send platform")
     sp.add_argument("platform", choices=sorted(SUPPORTED_PLATFORMS))
 
-    sdc = sub.add_parser("set-default-chat", help="Set default chat/webhook for a platform")
+    sdc = sub.add_parser("set-default-chat", aliases=["chat", "c"], help="Set default chat/webhook for a platform")
     sdc.add_argument("platform", choices=sorted(SUPPORTED_PLATFORMS))
     sdc.add_argument("chat_id")
 
-    cron = sub.add_parser("cron", help="Toggle cron_enabled in config")
+    cron = sub.add_parser("cron", aliases=["cr"], help="Toggle cron_enabled in config")
     cron.add_argument("state", choices=["on", "off"])
 
-    schedule = sub.add_parser("schedule", help="Inspect and configure platform-neutral scheduling")
+    schedule = sub.add_parser("schedule", aliases=["sched", "sc"], help="Inspect and configure platform-neutral scheduling")
     schedule_sub = schedule.add_subparsers(dest="schedule_action", required=True)
-    schedule_sub.add_parser("show", help="Print normalized schedule config")
-    schedule_sub.add_parser("command", help="Print the single-run command for external schedulers")
-    schedule_sub.add_parser("doctor", help="Check local readiness for scheduled runs")
-    schedule_enable = schedule_sub.add_parser("enable", help="Enable schedule metadata")
+    schedule_sub.add_parser("show", aliases=["s"], help="Print normalized schedule config")
+    schedule_sub.add_parser("command", aliases=["cmd"], help="Print the single-run command for external schedulers")
+    schedule_sub.add_parser("doctor", aliases=["d"], help="Check local readiness for scheduled runs")
+    schedule_enable = schedule_sub.add_parser("enable", aliases=["e"], help="Enable schedule metadata")
     schedule_enable.add_argument("--mode", choices=["external", "poll", "system-cron", "codex"], default="external")
     schedule_enable.add_argument("--cron", default=None)
     schedule_enable.add_argument("--interval", type=int, default=None)
     schedule_enable.add_argument("--timezone", default=None)
-    schedule_disable = schedule_sub.add_parser("disable", help="Disable schedule metadata")
+    schedule_disable = schedule_sub.add_parser("disable", aliases=["dis"], help="Disable schedule metadata")
     schedule_disable.set_defaults(schedule_action="disable")
 
-    run = sub.add_parser("run", help="Run all, one blogger, or one list")
+    run = sub.add_parser("run", aliases=["rn"], help="Run all, one blogger, or one list")
     run.add_argument("mode", choices=["all", "blogger", "list"], nargs="?", default="all")
     run.add_argument("identifier", nargs="?")
 
-    poll = sub.add_parser("poll", help="Run forever with polling_interval_minutes")
+    poll = sub.add_parser("poll", aliases=["pl"], help="Run forever with polling_interval_minutes")
     poll.add_argument("--once", action="store_true", help="Run one loop and exit")
 
-    fetch = sub.add_parser("fetch", help="Compatibility: fetch raw tweets as JSON")
+    fetch = sub.add_parser("fetch", aliases=["f"], help="Compatibility: fetch raw tweets as JSON")
     fetch.add_argument("mode", choices=["blogger", "list"])
     fetch.add_argument("identifier")
 
-    analyze = sub.add_parser("analyze", help="Compatibility: analyze a tweet JSON file")
+    analyze = sub.add_parser("analyze", aliases=["an"], help="Compatibility: analyze a tweet JSON file")
     analyze.add_argument("mode", choices=["single", "batch"])
     analyze.add_argument("file")
 
-    market = sub.add_parser("market", help="Compatibility: fetch market snippets")
+    market = sub.add_parser("market", aliases=["m"], help="Compatibility: fetch market snippets")
     market.add_argument("symbols", nargs="+")
 
-    send = sub.add_parser("send", help="Compatibility: send one message")
+    send = sub.add_parser("send", aliases=["snd"], help="Compatibility: send one message")
     send.add_argument("chat_id")
     send.add_argument("message")
     send.add_argument("platform", nargs="?", default="auto")
 
-    reset = sub.add_parser("reset-state", help="Clear read-ids for a target so past tweets can be re-sent")
+    reset = sub.add_parser("reset-state", aliases=["reset"], help="Clear read-ids for a target so past tweets can be re-sent")
     reset.add_argument("mode", choices=["blogger", "list"])
     reset.add_argument("identifier")
 
-    sub.add_parser("status", help="Show compact status")
-    sub.add_parser("config", help="Print full config JSON")
+    sub.add_parser("status", aliases=["st"], help="Show compact status")
+    sub.add_parser("config", aliases=["cfg"], help="Print full config JSON")
     return parser
 
 
@@ -1849,7 +1863,7 @@ def main(argv: list[str] | None = None, stdout: TextIO | None = None, stderr: Te
     paths = AlertPaths(args.base_dir)
     try:
         ensure_files(paths)
-        if args.command == "init":
+        if args.command in ("init", "i"):
             if args.interactive:
                 run_init_wizard(paths, out=out)
             else:
@@ -1880,29 +1894,29 @@ def main(argv: list[str] | None = None, stdout: TextIO | None = None, stderr: Te
                     timezone=args.timezone,
                 )
             print("initialized", file=out)
-        elif args.command == "track":
+        elif args.command in ("track", "t"):
             username = add_blogger(paths, args.target, args.routes)
             print(f"blogger added: @{username}", file=out)
             run_once(paths, "blogger", username, out)
-        elif args.command == "add-blogger":
+        elif args.command in ("add-blogger", "ab"):
             username = add_blogger(paths, args.target, args.routes)
             print(f"blogger added: @{username}", file=out)
-        elif args.command == "remove-blogger":
+        elif args.command in ("remove-blogger", "rm", "rb"):
             username = remove_blogger(paths, args.target)
             print(f"blogger removed: @{username}", file=out)
-        elif args.command == "add-list":
+        elif args.command in ("add-list", "addList", "al"):
             list_id = add_list(paths, args.target, args.routes)
             print(f"list added: {list_id}", file=out)
-        elif args.command == "remove-list":
+        elif args.command in ("remove-list", "rmList", "rl"):
             list_id = remove_list(paths, args.target)
             print(f"list removed: {list_id}", file=out)
-        elif args.command == "set-platform":
+        elif args.command in ("set-platform", "platform", "p"):
             set_platform(paths, args.platform)
             print(f"default platform: {args.platform}", file=out)
-        elif args.command == "set-default-chat":
+        elif args.command in ("set-default-chat", "chat", "c"):
             set_default_chat(paths, args.platform, args.chat_id)
             print(f"default {args.platform} target set", file=out)
-        elif args.command == "cron":
+        elif args.command in ("cron", "cr"):
             schedule = set_schedule(paths, enabled=args.state == "on")
             print(f"cron_enabled={str(schedule['enabled']).lower()}", file=out)
         elif args.command == "schedule":
@@ -1928,14 +1942,14 @@ def main(argv: list[str] | None = None, stdout: TextIO | None = None, stderr: Te
             elif args.schedule_action == "disable":
                 schedule = set_schedule(paths, enabled=False)
                 print(json.dumps(schedule, ensure_ascii=False, indent=2), file=out)
-        elif args.command == "reset-state":
+        elif args.command in ("reset-state", "reset"):
             ids_file = reset_state(paths, args.mode, args.identifier)
             print(f"reset: {ids_file}", file=out)
-        elif args.command == "run":
+        elif args.command in ("run", "rn"):
             if args.mode in {"blogger", "list"} and not args.identifier:
                 raise AlertError("run blogger/list requires an identifier")
             run_once(paths, args.mode, args.identifier or "", out)
-        elif args.command == "poll":
+        elif args.command in ("poll", "pl"):
             while True:
                 run_once(paths, "all", "", out)
                 if args.once:
@@ -1948,10 +1962,10 @@ def main(argv: list[str] | None = None, stdout: TextIO | None = None, stderr: Te
                 if jitter > 0:
                     sleep_seconds += random.uniform(0, jitter)
                 time.sleep(sleep_seconds)
-        elif args.command == "fetch":
+        elif args.command in ("fetch", "f"):
             raw = fetch_tweets(args.mode, args.identifier)
             print(json.dumps(raw, ensure_ascii=False, indent=2), file=out)
-        elif args.command == "analyze":
+        elif args.command in ("analyze", "an"):
             config = read_json(paths.config, DEFAULT_CONFIG)
             raw = json.loads(Path(args.file).read_text(encoding="utf-8"))
             if args.mode == "single":
@@ -1960,14 +1974,14 @@ def main(argv: list[str] | None = None, stdout: TextIO | None = None, stderr: Te
                 tweets = raw if isinstance(raw, list) else rows_from_raw(raw)
                 result = analyze_tweets(tweets, config)
             print(json.dumps(result, ensure_ascii=False, indent=2), file=out)
-        elif args.command == "market":
+        elif args.command in ("market", "m"):
             print(fetch_market(args.symbols), file=out)
-        elif args.command == "send":
+        elif args.command in ("send", "snd"):
             send_message(paths, args.chat_id, args.message, args.platform)
             print("sent", file=out)
-        elif args.command == "status":
+        elif args.command in ("status", "st"):
             show_status(paths, out)
-        elif args.command == "config":
+        elif args.command in ("config", "cfg"):
             print(json.dumps(read_json(paths.config, DEFAULT_CONFIG), ensure_ascii=False, indent=2), file=out)
         else:
             parser.print_help(err)

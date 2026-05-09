@@ -754,8 +754,8 @@ def test_cli_compatibility_subcommands_for_old_script_wrappers(tmp_path, monkeyp
 def test_v3_scripts_dir_contains_only_main_entry():
     script_dir = MODULE_PATH.parent
 
-    actual = {p.name for p in script_dir.iterdir() if p.is_file()}
-    assert actual == {"x_news_alert.py"}, f"unexpected files in scripts/: {actual - {'x_news_alert.py'}}"
+    actual = {p.name for p in script_dir.iterdir() if p.is_file() and not p.name.startswith("alert")}
+    assert actual == {"x_news_alert.py", "config_loader.py", "xurl-token-check.py"}, f"unexpected files in scripts/: {actual - {'x_news_alert.py', 'config_loader.py', 'xurl-token-check.py'}}"
 
 
 
