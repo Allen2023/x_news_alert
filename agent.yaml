@@ -1,0 +1,4 @@
+interface:
+  display_name: "X News Alert v3"
+  short_description: "Python X/Twitter alert automation"
+  default_prompt: "Use $x-news-alert-v3 to track X/Twitter accounts and send concise market alerts."
